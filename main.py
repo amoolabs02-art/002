@@ -85,33 +85,45 @@ class PokopowScraper:
         try:
             print("[Cloudflare] Starting browser to solve Cloudflare challenge...")
             
-            # Use headless mode - no visible browser window!
-            # The uc_open_with_reconnect handles Turnstile automatically
+            # Use headless mode with longer reconnect
             driver = Driver(uc=True, headless=True)
             
-            # Step 1: Visit homepage (will trigger Cloudflare + redirect to ad)
-            print("[Cloudflare] Visiting homepage...")
-            driver.uc_open_with_reconnect(POKOPOW_BASE_URL, reconnect_time=4)
-            time.sleep(2)
+            # Mehrere Versuche mit zunehmender Wartezeit
+            for attempt in range(3):
+                print(f"[Cloudflare] Attempt {attempt + 1}/3...")
+                
+                # Step 1: Visit homepage
+                print("[Cloudflare] Visiting homepage...")
+                driver.uc_open_with_reconnect(POKOPOW_BASE_URL, reconnect_time=10)
+                time.sleep(3)
+                
+                # Try clicking Turnstile if present
+                try:
+                    if driver.is_element_visible('iframe[src*="turnstile"], iframe[src*="captcha"]'):
+                        print("[Cloudflare] Detected Turnstile, attempting to click...")
+                        driver.uc_gui_click_captcha()
+                        time.sleep(3)
+                except:
+                    pass
+                
+                # Prüfe ob Challenge gelöst wurde
+                title = driver.title
+                if 'Just a moment' not in title and 'Nur einen Moment' not in title:
+                    print(f"[Cloudflare] ✓ Challenge solved! Title: {title}")
+                    break
+                else:
+                    print(f"[Cloudflare] Still blocked (attempt {attempt + 1}), retrying...")
+                    time.sleep(3)
             
-            # Step 2: Navigate to search page (this is where we get real cookies)
+            # Step 2: Navigate to search page
             print("[Cloudflare] Navigating to search page...")
             driver.get(SEARCH_URL_TEMPLATE.format(query='gta'))
-            time.sleep(3)
+            time.sleep(5)
             
-            # Try clicking Turnstile if present
-            try:
-                if driver.is_element_visible('iframe[src*="turnstile"], iframe[src*="captcha"]'):
-                    print("[Cloudflare] Detected Turnstile, attempting to click...")
-                    driver.uc_gui_click_captcha()
-                    time.sleep(2)
-            except:
-                pass
-            
-            # Check if we got past Cloudflare
-            if 'Nur einen Moment' in driver.title or 'Just a moment' in driver.title:
-                print("[Cloudflare] Still on challenge page, waiting more...")
-                time.sleep(5)
+            # Finaler Check:
+            if 'Just a moment' in driver.title or 'Nur einen Moment' in driver.title:
+                print("[Cloudflare] Still on challenge page after search, waiting 10s more...")
+                time.sleep(10)
             
             print(f"[Cloudflare] Current URL: {driver.current_url}")
             print(f"[Cloudflare] Title: {driver.title}")
@@ -134,6 +146,9 @@ class PokopowScraper:
                 return True
             else:
                 print(f"[Cloudflare] ✗ No cf_clearance cookie found. Got {len(selenium_cookies)} cookies.")
+                # Cookie-Liste ausgeben für Debug
+                for c in selenium_cookies:
+                    print(f"  Cookie: {c['name']} = {c['value'][:30]}...")
                 return False
                 
         except Exception as e:
