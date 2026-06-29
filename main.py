@@ -75,64 +75,73 @@ class PokopowScraper:
             return True
         
         try:
-            from seleniumbase import Driver
+            from playwright.sync_api import sync_playwright
         except ImportError:
-            print("[Cloudflare] ✗ seleniumbase nicht installiert.")
+            print("[Cloudflare] ✗ playwright nicht installiert.")
             return False
         
-        driver = None
         try:
-            print("[Cloudflare] Starting seleniumbase Driver...")
+            print("[Cloudflare] Starting Playwright (headless Chrome)...")
             
-            driver = Driver(uc=True, headless=True)
-            
-            for attempt in range(3):
-                print(f"[Cloudflare] Attempt {attempt + 1}/3...")
-                driver.uc_open_with_reconnect(POKOPOW_BASE_URL, reconnect_time=12)
-                time.sleep(4)
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    executable_path='/usr/bin/google-chrome',
+                    args=[
+                        '--no-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-gpu',
+                        '--disable-blink-features=AutomationControlled',
+                    ]
+                )
                 
-                # Try clicking Turnstile if present
-                try:
-                    if driver.is_element_visible('iframe[src*="turnstile"], iframe[src*="captcha"]'):
-                        print("[Cloudflare] Detected Turnstile, attempting to click...")
-                        driver.uc_gui_click_captcha()
-                        time.sleep(3)
-                except:
-                    pass
+                context = browser.new_context(
+                    viewport={'width': 1920, 'height': 1080},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                )
+                page = context.new_page()
                 
-                title = driver.title
-                if 'Just a moment' not in title and 'Nur einen Moment' not in title:
-                    print(f"[Cloudflare] ✓ Challenge solved! Title: {title}")
-                    break
+                for attempt in range(3):
+                    print(f"[Cloudflare] Attempt {attempt + 1}/3...")
+                    page.goto(POKOPOW_BASE_URL, wait_until='domcontentloaded', timeout=60000)
+                    page.wait_for_timeout(8000)
+                    
+                    title = page.title()
+                    if 'Just a moment' not in title and 'Nur einen Moment' not in title:
+                        print(f"[Cloudflare] ✓ Challenge solved! Title: {title}")
+                        break
+                    else:
+                        print(f"[Cloudflare] Still blocked (attempt {attempt + 1})")
+                        context.clear_cookies()
+                        page.wait_for_timeout(3000)
+                
+                print("[Cloudflare] Navigating to search page...")
+                page.goto(SEARCH_URL_TEMPLATE.format(query='gta'), wait_until='domcontentloaded', timeout=60000)
+                page.wait_for_timeout(5000)
+                
+                print(f"[Cloudflare] URL: {page.url}")
+                print(f"[Cloudflare] Title: {page.title()}")
+                
+                cookies = context.cookies()
+                self.user_agent = page.evaluate('navigator.userAgent')
+                
+                cf = None
+                for c in cookies:
+                    print(f"  Cookie: {c['name']}")
+                    if c['name'] == 'cf_clearance':
+                        cf = c['value']
+                
+                if cf:
+                    self.cf_clearance = cf
+                    self.cookies_initialized = True
+                    self.last_cookie_refresh = time.time()
+                    print(f"[Cloudflare] ✓ Got cf_clearance! UA: {self.user_agent[:60]}...")
+                    browser.close()
+                    return True
                 else:
-                    print(f"[Cloudflare] Still blocked (attempt {attempt + 1})")
-                    time.sleep(3)
-            
-            print("[Cloudflare] Navigating to search page...")
-            driver.get(SEARCH_URL_TEMPLATE.format(query='gta'))
-            time.sleep(5)
-            
-            print(f"[Cloudflare] URL: {driver.current_url}")
-            print(f"[Cloudflare] Title: {driver.title}")
-            
-            cookies = driver.get_cookies()
-            self.user_agent = driver.execute_script('return navigator.userAgent')
-            
-            cf = None
-            for c in cookies:
-                print(f"  Cookie: {c['name']}")
-                if c['name'] == 'cf_clearance':
-                    cf = c['value']
-            
-            if cf:
-                self.cf_clearance = cf
-                self.cookies_initialized = True
-                self.last_cookie_refresh = time.time()
-                print(f"[Cloudflare] ✓ Got cf_clearance! UA: {self.user_agent[:60]}...")
-                return True
-            else:
-                print(f"[Cloudflare] ✗ No cf_clearance. Got {len(cookies)} cookies.")
-                return False
+                    print(f"[Cloudflare] ✗ No cf_clearance. Got {len(cookies)} cookies.")
+                    browser.close()
+                    return False
                 
         except Exception as e:
             print(f"[Cloudflare] Error: {type(e).__name__}: {e}")

@@ -10,6 +10,7 @@ RUN apt-get update -qq && \
 
 WORKDIR /app
 COPY requirements.txt .
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
