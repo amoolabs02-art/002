@@ -16,6 +16,8 @@ import time
 import random
 import threading
 import traceback
+import urllib.request
+import json
 
 # ============================================================================
 # CONFIGURATION
@@ -74,85 +76,39 @@ class PokopowScraper:
             print(f"[Cloudflare] ✓ Using cf_clearance from environment variable!")
             return True
         
+        # ─── captchaSolver (Node.js puppeteer-extra + stealth) ───
         try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            print("[Cloudflare] ✗ playwright nicht installiert.")
-            return False
-        
-        try:
-            print("[Cloudflare] Starting Playwright (headless Chrome)...")
+            import urllib.request
+            import json
             
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    executable_path='/usr/bin/google-chrome',
-                    args=[
-                        '--no-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-gpu',
-                        '--disable-blink-features=AutomationControlled',
-                    ]
-                )
-                
-                context = browser.new_context(
-                    viewport={'width': 1920, 'height': 1080},
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-                )
-                page = context.new_page()
-                
-                for attempt in range(3):
-                    print(f"[Cloudflare] Attempt {attempt + 1}/3...")
-                    page.goto(POKOPOW_BASE_URL, wait_until='domcontentloaded', timeout=60000)
-                    page.wait_for_timeout(8000)
-                    
-                    title = page.title()
-                    if 'Just a moment' not in title and 'Nur einen Moment' not in title:
-                        print(f"[Cloudflare] ✓ Challenge solved! Title: {title}")
+            # Sicherstellen, dass captchaSolver läuft (wait loop)
+            from urllib.parse import quote
+            api_url = f'http://127.0.0.1:3000/api?target={quote(POKOPOW_BASE_URL, safe="")}'
+            print(f'[Cloudflare] Requesting captchaSolver...')
+            
+            resp = urllib.request.urlopen(api_url, timeout=120)
+            data = json.loads(resp.read().decode())
+            
+            if data.get('success') and data.get('cookie'):
+                cookie_str = data['cookie']
+                for part in cookie_str.split('; '):
+                    if part.startswith('cf_clearance='):
+                        self.cf_clearance = part[len('cf_clearance='):]
                         break
-                    else:
-                        print(f"[Cloudflare] Still blocked (attempt {attempt + 1})")
-                        context.clear_cookies()
-                        page.wait_for_timeout(3000)
                 
-                print("[Cloudflare] Navigating to search page...")
-                page.goto(SEARCH_URL_TEMPLATE.format(query='gta'), wait_until='domcontentloaded', timeout=60000)
-                page.wait_for_timeout(5000)
-                
-                print(f"[Cloudflare] URL: {page.url}")
-                print(f"[Cloudflare] Title: {page.title()}")
-                
-                cookies = context.cookies()
-                self.user_agent = page.evaluate('navigator.userAgent')
-                
-                cf = None
-                for c in cookies:
-                    print(f"  Cookie: {c['name']}")
-                    if c['name'] == 'cf_clearance':
-                        cf = c['value']
-                
-                if cf:
-                    self.cf_clearance = cf
+                if self.cf_clearance:
+                    self.user_agent = data.get('userAgent', '')
                     self.cookies_initialized = True
                     self.last_cookie_refresh = time.time()
-                    print(f"[Cloudflare] ✓ Got cf_clearance! UA: {self.user_agent[:60]}...")
-                    browser.close()
+                    print(f'[Cloudflare] ✓ Got cf_clearance via captchaSolver!')
                     return True
-                else:
-                    print(f"[Cloudflare] ✗ No cf_clearance. Got {len(cookies)} cookies.")
-                    browser.close()
-                    return False
-                
-        except Exception as e:
-            print(f"[Cloudflare] Error: {type(e).__name__}: {e}")
-            traceback.print_exc()
+            
+            print(f'[Cloudflare] captchaSolver failed: {data}')
             return False
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except:
-                    pass
+            
+        except Exception as e:
+            print(f'[Cloudflare] captchaSolver error: {e}')
+            return False
     
     def ensure_cookies(self):
         """Ensure we have valid cf_clearance cookies. Refresh if needed."""
