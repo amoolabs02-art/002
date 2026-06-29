@@ -75,30 +75,30 @@ class PokopowScraper:
             return True
         
         try:
-            import undetected_chromedriver as uc
+            from seleniumbase import Driver
         except ImportError:
-            print("[Cloudflare] ✗ undetected_chromedriver nicht installiert.")
+            print("[Cloudflare] ✗ seleniumbase nicht installiert.")
             return False
         
         driver = None
         try:
-            print("[Cloudflare] Starting undetected_chromedriver...")
+            print("[Cloudflare] Starting seleniumbase Driver...")
             
-            options = uc.ChromeOptions()
-            options.add_argument('--headless=new')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_argument('--disable-gpu')
+            driver = Driver(uc=True, headless=True)
             
-            # Feste Version für Stabilität (sonst rät uc die neueste)
-            driver = uc.Chrome(options=options, version_main=124)
-            
-            # Mehrere Versuche
             for attempt in range(3):
                 print(f"[Cloudflare] Attempt {attempt + 1}/3...")
-                driver.get(POKOPOW_BASE_URL)
-                time.sleep(8)
+                driver.uc_open_with_reconnect(POKOPOW_BASE_URL, reconnect_time=12)
+                time.sleep(4)
+                
+                # Try clicking Turnstile if present
+                try:
+                    if driver.is_element_visible('iframe[src*="turnstile"], iframe[src*="captcha"]'):
+                        print("[Cloudflare] Detected Turnstile, attempting to click...")
+                        driver.uc_gui_click_captcha()
+                        time.sleep(3)
+                except:
+                    pass
                 
                 title = driver.title
                 if 'Just a moment' not in title and 'Nur einen Moment' not in title:
@@ -106,11 +106,8 @@ class PokopowScraper:
                     break
                 else:
                     print(f"[Cloudflare] Still blocked (attempt {attempt + 1})")
-                    # Cookies löschen und neu versuchen
-                    driver.delete_all_cookies()
                     time.sleep(3)
             
-            # Search page
             print("[Cloudflare] Navigating to search page...")
             driver.get(SEARCH_URL_TEMPLATE.format(query='gta'))
             time.sleep(5)
