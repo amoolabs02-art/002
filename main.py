@@ -21,7 +21,7 @@ import traceback
 # CONFIGURATION
 # ============================================================================
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "XXXXXXXXXXJZbDSCwJIZL1_yo")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = 1384523041563869276
 COMMAND_PREFIX = "?"
 POKOPOW_BASE_URL = "https://pokopow.com"
