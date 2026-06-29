@@ -52,14 +52,18 @@ class PokopowScraper:
         self._lock = threading.Lock()
     
     def _solve_cloudflare(self):
-        """Cloudflare bypass via undetected_chromedriver (Chrome auf Railway).
+        """Start a real browser to solve Cloudflare Turnstile and get cf_clearance cookie.
+        This runs synchronously in a thread.
         
-        Reihenfolge:
-          1. CF_CLEARANCE aus Umgebungsvariable
-          2. undetected_chromedriver (headless, löst Turnstile)
-          3. curl_cffi mit Headern (Fallback)
+        On headless hosters (like dein Hoster) ohne Browser, kannst du alternativ
+        eine gültige cf_clearance per Umgebungsvariable setzen:
+        
+            export CF_CLEARANCE="wert..."
+            export USER_AGENT="Mozilla/5.0 ..."
+        
+        Dann wird der Browser-Teil übersprungen.
         """
-        # ─── 1. CF_CLEARANCE aus Umgebungsvariable ───
+        # Prüfe ob cf_clearance als Umgebungsvariable gesetzt ist (für Headless-Hoster)
         env_cf = os.environ.get("CF_CLEARANCE", "")
         env_ua = os.environ.get("USER_AGENT", "")
         if env_cf:
@@ -70,106 +74,78 @@ class PokopowScraper:
             print(f"[Cloudflare] ✓ Using cf_clearance from environment variable!")
             return True
         
-        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        
-        # ─── 2. undetected_chromedriver (findet Chrome automatisch) ───
         try:
-            import undetected_chromedriver as uc
-            print("[Cloudflare] Starting undetected_chromedriver...")
-            options = uc.ChromeOptions()
-            options.add_argument('--headless=new')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--disable-blink-features=AutomationControlled')
+            from seleniumbase import Driver
+        except ImportError:
+            print("[Cloudflare] ✗ seleniumbase nicht installiert und keine CF_CLEARANCE env var gesetzt.")
+            print("[Cloudflare]   Setze CF_CLEARANCE als Umgebungsvariable auf deinem Hoster!")
+            return False
+        
+        driver = None
+        try:
+            print("[Cloudflare] Starting browser to solve Cloudflare challenge...")
             
-            driver = uc.Chrome(options=options)
+            # Use headless mode - no visible browser window!
+            # The uc_open_with_reconnect handles Turnstile automatically
+            driver = Driver(uc=True, headless=True)
+            
+            # Step 1: Visit homepage (will trigger Cloudflare + redirect to ad)
+            print("[Cloudflare] Visiting homepage...")
+            driver.uc_open_with_reconnect(POKOPOW_BASE_URL, reconnect_time=4)
+            time.sleep(2)
+            
+            # Step 2: Navigate to search page (this is where we get real cookies)
+            print("[Cloudflare] Navigating to search page...")
+            driver.get(SEARCH_URL_TEMPLATE.format(query='gta'))
+            time.sleep(3)
+            
+            # Try clicking Turnstile if present
             try:
-                print("[Cloudflare] Visiting homepage...")
-                driver.get(POKOPOW_BASE_URL)
+                if driver.is_element_visible('iframe[src*="turnstile"], iframe[src*="captcha"]'):
+                    print("[Cloudflare] Detected Turnstile, attempting to click...")
+                    driver.uc_gui_click_captcha()
+                    time.sleep(2)
+            except:
+                pass
+            
+            # Check if we got past Cloudflare
+            if 'Nur einen Moment' in driver.title or 'Just a moment' in driver.title:
+                print("[Cloudflare] Still on challenge page, waiting more...")
                 time.sleep(5)
+            
+            print(f"[Cloudflare] Current URL: {driver.current_url}")
+            print(f"[Cloudflare] Title: {driver.title}")
+            
+            # Extract cookies
+            selenium_cookies = driver.get_cookies()
+            self.user_agent = driver.execute_script('return navigator.userAgent')
+            
+            cf = None
+            for c in selenium_cookies:
+                if c['name'] == 'cf_clearance':
+                    cf = c['value']
+                    break
+            
+            if cf:
+                self.cf_clearance = cf
+                self.cookies_initialized = True
+                self.last_cookie_refresh = time.time()
+                print(f"[Cloudflare] ✓ Got cf_clearance cookie! UA: {self.user_agent[:60]}...")
+                return True
+            else:
+                print(f"[Cloudflare] ✗ No cf_clearance cookie found. Got {len(selenium_cookies)} cookies.")
+                return False
                 
-                print("[Cloudflare] Navigating to search...")
-                driver.get(SEARCH_URL_TEMPLATE.format(query='gta'))
-                time.sleep(3)
-                
-                self.user_agent = driver.execute_script('return navigator.userAgent')
-                
-                cookies = driver.get_cookies()
-                cf = None
-                for c in cookies:
-                    if c['name'] == 'cf_clearance':
-                        cf = c['value']
-                        break
-                
-                if cf:
-                    self.cf_clearance = cf
-                    self.cookies_initialized = True
-                    self.last_cookie_refresh = time.time()
-                    print(f"[Cloudflare] ✓ Got cf_clearance via undetected_chromedriver!")
-                    return True
-                else:
-                    print(f"[Cloudflare] No cf_clearance cookie (got {len(cookies)} cookies)")
-            finally:
+        except Exception as e:
+            print(f"[Cloudflare] Error: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            return False
+        finally:
+            if driver:
                 try:
                     driver.quit()
                 except:
                     pass
-        except ImportError:
-            print("[Cloudflare] undetected_chromedriver not installed")
-        except Exception as e:
-            print(f"[Cloudflare] undetected_chromedriver failed: {e}")
-        
-        # ─── 3. curl_cffi mit Headern (Fallback) ───
-        try:
-            print("[Cloudflare] Trying curl_cffi with full headers...")
-            session = curl_requests.Session()
-            headers = {
-                'User-Agent': ua,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Referer': f'{POKOPOW_BASE_URL}/',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Cache-Control': 'max-age=0',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Sec-CH-UA': '"Not_A Brand";v="8", "Chromium";v="124", "Google Chrome";v="124"',
-                'Sec-CH-UA-Mobile': '?0',
-                'Sec-CH-UA-Platform': 'Windows',
-            }
-            resp = session.get(POKOPOW_BASE_URL, impersonate='chrome124', headers=headers, timeout=15)
-            cf = session.cookies.get('cf_clearance')
-            if cf:
-                self.cf_clearance = cf
-                self.user_agent = ua
-                self.cookies_initialized = True
-                self.last_cookie_refresh = time.time()
-                print(f"[Cloudflare] ✓ Got cf_clearance via curl_cffi!")
-                return True
-            else:
-                print(f"[Cloudflare] curl_cffi: no cf_clearance (status {resp.status_code})")
-                
-            resp2 = session.get(SEARCH_URL_TEMPLATE.format(query='gta'), impersonate='chrome124', headers=headers, timeout=15)
-            cf = session.cookies.get('cf_clearance')
-            if cf:
-                self.cf_clearance = cf
-                self.user_agent = ua
-                self.cookies_initialized = True
-                self.last_cookie_refresh = time.time()
-                print(f"[Cloudflare] ✓ Got cf_clearance via curl_cffi (search page)!")
-                return True
-        except Exception as e:
-            print(f"[Cloudflare] curl_cffi approach failed: {e}")
-        
-        # ─── 4. Nichts hat geklappt ───
-        print(f"[Cloudflare] ✗ Alle Methoden fehlgeschlagen.")
-        print(f"[Cloudflare] ✗ Setze CF_CLEARANCE als Env-Variable im Railway-Dashboard.")
-        return False
     
     def ensure_cookies(self):
         """Ensure we have valid cf_clearance cookies. Refresh if needed."""
