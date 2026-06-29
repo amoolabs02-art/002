@@ -21,7 +21,7 @@ import traceback
 # CONFIGURATION
 # ============================================================================
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "MTM2MDkzODg4MDQ1NDM2MTEyOQ.G7qdJh.NdKPpVqAm41Xd_Z9HIBIb00xFGPYTkNeSSEviQ")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "MTM2MDkzODg4MDQ1NDM2MTEyOQ.GN-72O.x5QgXyWPevCyrdbFsnFedGBJZbDSCwJIZL1_yo")
 CHANNEL_ID = 1384523041563869276
 COMMAND_PREFIX = "?"
 POKOPOW_BASE_URL = "https://pokopow.com"
@@ -171,11 +171,8 @@ class PokopowScraper:
         # Set the cf_clearance cookie
         session.cookies.set('cf_clearance', self.cf_clearance, domain='.pokopow.com')
         
-        # Random browser impersonation for "neuer User" effect
-        impersonate = random.choice(BROWSER_IMPERSONATIONS)
-        
-        # Build headers that match the impersonation
-        is_firefox = 'firefox' in impersonate
+        # CHROME ONLY - das Cookie wurde mit Chrome gelöst, also nur Chrome verwenden!
+        impersonate = 'chrome124'
         
         headers = {
             'User-Agent': self.user_agent or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -191,19 +188,14 @@ class PokopowScraper:
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
+            'Sec-CH-UA': '"Not_A Brand";v="8", "Chromium";v="124", "Google Chrome";v="124"',
+            'Sec-CH-UA-Arch': 'x86',
+            'Sec-CH-UA-Bitness': '64',
+            'Sec-CH-UA-Full-Version-List': '"Not_A Brand";v="8.0.0.0", "Chromium";v="124.0.6367.91", "Google Chrome";v="124.0.6367.91"',
+            'Sec-CH-UA-Mobile': '?0',
+            'Sec-CH-UA-Platform': 'Windows',
+            'Sec-CH-UA-Platform-Version': '15.0.0',
         }
-        
-        # Add Chrome-specific client hints (only for Chrome-based impersonations)
-        if not is_firefox:
-            headers.update({
-                'Sec-CH-UA': '"Not_A Brand";v="8", "Chromium";v="124", "Google Chrome";v="124"',
-                'Sec-CH-UA-Arch': 'x86',
-                'Sec-CH-UA-Bitness': '64',
-                'Sec-CH-UA-Full-Version-List': '"Not_A Brand";v="8.0.0.0", "Chromium";v="124.0.6367.91", "Google Chrome";v="124.0.6367.91"',
-                'Sec-CH-UA-Mobile': '?0',
-                'Sec-CH-UA-Platform': 'Windows',
-                'Sec-CH-UA-Platform-Version': '15.0.0',
-            })
         
         return session, impersonate
     
@@ -270,16 +262,42 @@ class PokopowScraper:
             
             soup = BeautifulSoup(response.content, 'html.parser')
             
+            # DEBUG: Seite analysieren
+            print(f"[Debug] Response size: {len(response.content)} bytes")
+            print(f"[Debug] Page title: {soup.title.string if soup.title else 'N/A'}")
+            
             # Find game links - the site uses elementor-post__thumbnail__link
             game_links = soup.find_all('a', class_='elementor-post__thumbnail__link')
+            print(f"[Debug] elementor-post__thumbnail__link found: {len(game_links)}")
             
             # Also look for article links as fallback
             if not game_links:
+                # Suche nach allen Links, die auf /search/ oder /game/ verweisen
+                all_links = soup.find_all('a', href=True)
+                pokopow_links = [a for a in all_links if a['href'].startswith(POKOPOW_BASE_URL) and a['href'] != POKOPOW_BASE_URL]
+                print(f"[Debug] Total pokopow.com links on page: {len(pokopow_links)}")
+                
+                # Versuche es mit Artikel-Tags
                 articles = soup.find_all('article')
+                print(f"[Debug] <article> tags found: {len(articles)}")
                 for article in articles:
                     h3 = article.find('h3')
                     if h3 and h3.find('a'):
                         game_links.append(h3.find('a'))
+                
+                # Letzter Versuch: CSS-Klasse 'post' oder 'game'
+                if not game_links:
+                    for cls in ['post', 'game', 'entry', 'card']:
+                        posts = soup.find_all(class_=cls)
+                        if posts:
+                            print(f"[Debug] Found {len(posts)} elements with class '{cls}'")
+                            for post in posts[:5]:  # nur erste 5
+                                a = post.find('a', href=True)
+                                if a and a['href'].startswith(POKOPOW_BASE_URL):
+                                    game_links.append(a)
+            
+            if not game_links:
+                print(f"[Debug] HTML snippet (first 1000 chars): {response.text[:1000]}")
             
             results = []
             for link in game_links:
