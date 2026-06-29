@@ -75,80 +75,66 @@ class PokopowScraper:
             return True
         
         try:
-            from seleniumbase import Driver
+            import undetected_chromedriver as uc
         except ImportError:
-            print("[Cloudflare] ✗ seleniumbase nicht installiert und keine CF_CLEARANCE env var gesetzt.")
-            print("[Cloudflare]   Setze CF_CLEARANCE als Umgebungsvariable auf deinem Hoster!")
+            print("[Cloudflare] ✗ undetected_chromedriver nicht installiert.")
             return False
         
         driver = None
         try:
-            print("[Cloudflare] Starting browser to solve Cloudflare challenge...")
+            print("[Cloudflare] Starting undetected_chromedriver...")
             
-            # Use headless mode with longer reconnect
-            driver = Driver(uc=True, headless=True)
+            options = uc.ChromeOptions()
+            options.add_argument('--headless=new')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_argument('--disable-gpu')
             
-            # Mehrere Versuche mit zunehmender Wartezeit
+            # Feste Version für Stabilität (sonst rät uc die neueste)
+            driver = uc.Chrome(options=options, version_main=124)
+            
+            # Mehrere Versuche
             for attempt in range(3):
                 print(f"[Cloudflare] Attempt {attempt + 1}/3...")
+                driver.get(POKOPOW_BASE_URL)
+                time.sleep(8)
                 
-                # Step 1: Visit homepage
-                print("[Cloudflare] Visiting homepage...")
-                driver.uc_open_with_reconnect(POKOPOW_BASE_URL, reconnect_time=10)
-                time.sleep(3)
-                
-                # Try clicking Turnstile if present
-                try:
-                    if driver.is_element_visible('iframe[src*="turnstile"], iframe[src*="captcha"]'):
-                        print("[Cloudflare] Detected Turnstile, attempting to click...")
-                        driver.uc_gui_click_captcha()
-                        time.sleep(3)
-                except:
-                    pass
-                
-                # Prüfe ob Challenge gelöst wurde
                 title = driver.title
                 if 'Just a moment' not in title and 'Nur einen Moment' not in title:
                     print(f"[Cloudflare] ✓ Challenge solved! Title: {title}")
                     break
                 else:
-                    print(f"[Cloudflare] Still blocked (attempt {attempt + 1}), retrying...")
+                    print(f"[Cloudflare] Still blocked (attempt {attempt + 1})")
+                    # Cookies löschen und neu versuchen
+                    driver.delete_all_cookies()
                     time.sleep(3)
             
-            # Step 2: Navigate to search page
+            # Search page
             print("[Cloudflare] Navigating to search page...")
             driver.get(SEARCH_URL_TEMPLATE.format(query='gta'))
             time.sleep(5)
             
-            # Finaler Check:
-            if 'Just a moment' in driver.title or 'Nur einen Moment' in driver.title:
-                print("[Cloudflare] Still on challenge page after search, waiting 10s more...")
-                time.sleep(10)
-            
-            print(f"[Cloudflare] Current URL: {driver.current_url}")
+            print(f"[Cloudflare] URL: {driver.current_url}")
             print(f"[Cloudflare] Title: {driver.title}")
             
-            # Extract cookies
-            selenium_cookies = driver.get_cookies()
+            cookies = driver.get_cookies()
             self.user_agent = driver.execute_script('return navigator.userAgent')
             
             cf = None
-            for c in selenium_cookies:
+            for c in cookies:
+                print(f"  Cookie: {c['name']}")
                 if c['name'] == 'cf_clearance':
                     cf = c['value']
-                    break
             
             if cf:
                 self.cf_clearance = cf
                 self.cookies_initialized = True
                 self.last_cookie_refresh = time.time()
-                print(f"[Cloudflare] ✓ Got cf_clearance cookie! UA: {self.user_agent[:60]}...")
+                print(f"[Cloudflare] ✓ Got cf_clearance! UA: {self.user_agent[:60]}...")
                 return True
             else:
-                print(f"[Cloudflare] ✗ No cf_clearance cookie found. Got {len(selenium_cookies)} cookies.")
-                # Cookie-Liste ausgeben für Debug
-                for c in selenium_cookies:
-                    print(f"  Cookie: {c['name']} = {c['value'][:30]}...")
+                print(f"[Cloudflare] ✗ No cf_clearance. Got {len(cookies)} cookies.")
                 return False
                 
         except Exception as e:
